@@ -4,6 +4,7 @@ Changes by Version
 0.26.0 (2021-05-12)
 -------------------
 * Bumped OpenTelemetry Collector to v0.26.0
+* Add CodeQL security scan ([tbd](tbd))
 
 0.25.0 (2021-05-06)
 -------------------
