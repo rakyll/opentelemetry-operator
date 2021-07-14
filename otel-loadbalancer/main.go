@@ -56,7 +56,7 @@ func targetHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func distribute(ctx context.Context) {
-	cfg, err := config.Load()
+	cfg, err := config.Load("")
 	if err != nil {
 		fmt.Println(err)
 	}

@@ -2,21 +2,18 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"io/ioutil"
 
 	"gopkg.in/yaml.v2"
 )
 
-var (
-	// ErrInvalidLBYAML represents an error in the format of the original YAML configuration file.
-	ErrInvalidLBYAML = errors.New("couldn't parse the loadbalancer configuration")
-	// ErrInvalidLBFile represents an error in reading the original YAML configuration file.
-	ErrInvalidLBFile = errors.New("couldn't read the loadbalancer configuration file")
-)
+// TODO: Move to mode package.
 
-var (
-	defaultConfigFile string = "/conf/loadbalancer.yaml"
-)
+// ErrInvalidYAML represents an error in the format of the original YAML configuration file.
+var ErrInvalidYAML = errors.New("couldn't parse the loadbalancer configuration")
+
+const defaultConfigFile string = "/conf/loadbalancer.yaml"
 
 type Config struct {
 	Mode          string            `yaml:"mode"`
@@ -28,29 +25,25 @@ type ScrapeConfig struct {
 	ScrapeConfigs []map[string]interface{} `yaml:"scrape_configs"`
 }
 
+func Load(file string) (Config, error) {
+	if file == "" {
+		file = defaultConfigFile
+	}
+
+	var cfg Config
+	if err := unmarshall(&cfg, file); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
 func unmarshall(cfg *Config, configFile string) error {
 	yamlFile, err := ioutil.ReadFile(configFile)
 	if err != nil {
-		return ErrInvalidLBFile
+		return err
 	}
-
-	err = yaml.UnmarshalStrict(yamlFile, cfg)
-	if err != nil {
-		return ErrInvalidLBYAML
+	if err = yaml.UnmarshalStrict(yamlFile, cfg); err != nil {
+		return fmt.Errorf("error unmarshaling YAML: %w", err)
 	}
 	return nil
-}
-
-func Load(newConfigFile ...string) (Config, error) {
-	cfg := Config{}
-	configFile := defaultConfigFile
-	if len(newConfigFile) > 0 {
-		configFile = newConfigFile[0]
-	}
-
-	if err := unmarshall(&cfg, configFile); err != nil {
-		return Config{}, err
-	}
-
-	return cfg, nil
 }
