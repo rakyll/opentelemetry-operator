@@ -32,6 +32,11 @@ type Manager struct {
 	logger  log.Logger
 }
 
+type TargetGroup struct {
+	Targets []string
+	Labels  model.LabelSet
+}
+
 type TargetData struct {
 	JobName string
 	Target  string
@@ -276,16 +281,13 @@ func (m *Manager) Targets() ([]TargetData, error) {
 
 	for jobName, tgs := range tsets {
 		for _, target := range tgs {
-			var targetGroup = struct {
-				Targets []string
-				Labels  model.LabelSet
-			}{}
-			targetInterface, err := target.MarshalYAML()
+			var targetGroup TargetGroup
+			data, err := target.MarshalYAML()
 			if err != nil {
 				return nil, err
 			}
 
-			targetYAML, err := yaml.Marshal(targetInterface)
+			targetYAML, err := yaml.Marshal(data)
 			if err != nil {
 				return nil, err
 			}
