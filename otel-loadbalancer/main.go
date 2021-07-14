@@ -12,10 +12,10 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/go-co-op/gocron"
-	"github.com/http-sd-loadbalancer/collector"
-	"github.com/http-sd-loadbalancer/config"
-	lbdiscovery "github.com/http-sd-loadbalancer/discovery"
-	loadbalancer "github.com/http-sd-loadbalancer/mode"
+	"github.com/otel-loadbalancer/collector"
+	"github.com/otel-loadbalancer/config"
+	lbdiscovery "github.com/otel-loadbalancer/discovery"
+	loadbalancer "github.com/otel-loadbalancer/mode"
 
 	"github.com/gorilla/mux"
 )
@@ -120,7 +120,7 @@ func main() {
 	}
 	defer watcher.Close()
 
-	err = watcher.Add("./conf")
+	err = watcher.Add("/conf/")
 	if err != nil {
 		log.Fatal(err)
 	}

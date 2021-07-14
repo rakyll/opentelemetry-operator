@@ -3,7 +3,7 @@ package mode
 import (
 	"log"
 
-	lbdiscovery "github.com/http-sd-loadbalancer/discovery"
+	lbdiscovery "github.com/otel-loadbalancer/discovery"
 	"github.com/prometheus/common/model"
 )
 

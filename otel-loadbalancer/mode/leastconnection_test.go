@@ -3,8 +3,8 @@ package mode_test
 import (
 	"testing"
 
-	lbdiscovery "github.com/http-sd-loadbalancer/discovery"
-	"github.com/http-sd-loadbalancer/loadbalancer"
+	lbdiscovery "github.com/otel-loadbalancer/discovery"
+	"github.com/otel-loadbalancer/loadbalancer"
 	"github.com/prometheus/common/model"
 	"github.com/stretchr/testify/assert"
 )
