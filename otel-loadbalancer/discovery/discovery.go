@@ -2,7 +2,6 @@ package discovery
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 
@@ -28,14 +27,9 @@ import (
 	yaml "gopkg.in/yaml.v2"
 )
 
-var (
-	// ErrCreateManager represents an error in creating a service discovery manager.
-	ErrCreateManager = errors.New("couldn't create manager")
-)
-
-type TargetGroup struct {
-	Targets []string
-	Labels  model.LabelSet
+type Manager struct {
+	manager *discovery.Manager
+	logger  log.Logger
 }
 
 type TargetData struct {
@@ -44,56 +38,14 @@ type TargetData struct {
 	Labels  model.LabelSet
 }
 
-func run(discoveryManager *discovery.Manager) error {
-	if err := discoveryManager.Run(); err != nil {
-		return fmt.Errorf("discovery manager failed")
-	}
-	return nil
-}
-
-func getTargets(discoveryManager *discovery.Manager) ([]TargetData, error) {
-	tsets := <-discoveryManager.SyncCh()
-	targets := []TargetData{}
-
-	for jobName, tgs := range tsets {
-		for _, target := range tgs {
-			var targetGroup = TargetGroup{}
-			targetInterface, err := target.MarshalYAML()
-			if err != nil {
-				return nil, err
-			}
-
-			targetYAML, err := yaml.Marshal(targetInterface)
-			if err != nil {
-				return nil, err
-			}
-
-			if err = yaml.Unmarshal(targetYAML, &targetGroup); err != nil {
-				return nil, err
-			}
-
-			targetsList := targetGroup.Targets
-			for _, target := range targetsList {
-				targets = append(targets, TargetData{JobName: jobName, Target: target, Labels: targetGroup.Labels})
-			}
-		}
-	}
-	return targets, nil
-}
-
-func NewManager(ctx context.Context) *discovery.Manager {
-	return discovery.NewManager(ctx, log.NewNopLogger())
-}
-
-func Watch(discoveryManager *discovery.Manager, targets *[]TargetData) {
-	var err error
-	*targets, err = getTargets(discoveryManager)
-	if err != nil {
-		fmt.Println(err)
+func NewManager(ctx context.Context, logger log.Logger, options ...func(*discovery.Manager)) *Manager {
+	return &Manager{
+		manager: discovery.NewManager(ctx, logger, options...),
+		logger:  logger,
 	}
 }
 
-func Get(discoveryManager *discovery.Manager, cfg config.Config) ([]TargetData, error) {
+func (m *Manager) ApplyConfig(cfg config.Config) ([]TargetData, error) {
 	discoveryCfg := make(map[string]discovery.Configs)
 
 	for _, scrapeConfig := range cfg.Config.ScrapeConfigs {
@@ -305,16 +257,48 @@ func Get(discoveryManager *discovery.Manager, cfg config.Config) ([]TargetData, 
 		discoveryCfg[scrapeConfig["job_name"].(string)] = discoveryConfigs
 	}
 
-	if err := discoveryManager.ApplyConfig(discoveryCfg); err != nil {
+	if err := m.manager.ApplyConfig(discoveryCfg); err != nil {
 		return nil, err
 	}
+	go func() {
+		if err := m.manager.Run(); err != nil {
+			m.logger.Log("discovery manager failed", err)
+		}
+	}()
 
-	go run(discoveryManager)
+	return m.Targets()
+}
 
-	targets, err := getTargets(discoveryManager)
-	if err != nil {
-		return nil, err
+func (m *Manager) Targets() ([]TargetData, error) {
+	// TODO: Remove the the marshalling and unmarshalling here.
+	tsets := <-m.manager.SyncCh()
+	targets := []TargetData{}
+
+	for jobName, tgs := range tsets {
+		for _, target := range tgs {
+			var targetGroup = struct {
+				Targets []string
+				Labels  model.LabelSet
+			}{}
+			targetInterface, err := target.MarshalYAML()
+			if err != nil {
+				return nil, err
+			}
+
+			targetYAML, err := yaml.Marshal(targetInterface)
+			if err != nil {
+				return nil, err
+			}
+
+			if err = yaml.Unmarshal(targetYAML, &targetGroup); err != nil {
+				return nil, err
+			}
+
+			targetsList := targetGroup.Targets
+			for _, target := range targetsList {
+				targets = append(targets, TargetData{JobName: jobName, Target: target, Labels: targetGroup.Labels})
+			}
+		}
 	}
-
 	return targets, nil
 }
