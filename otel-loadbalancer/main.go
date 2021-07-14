@@ -12,6 +12,7 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/go-co-op/gocron"
+	gokitlog "github.com/go-kit/log"
 	"github.com/otel-loadbalancer/collector"
 	"github.com/otel-loadbalancer/config"
 	lbdiscovery "github.com/otel-loadbalancer/discovery"
@@ -68,17 +69,23 @@ func distribute(ctx context.Context) {
 	}
 
 	// creates a new discovery manager
-	discoveryManager := lbdiscovery.NewManager(ctx)
+	discoveryManager := lbdiscovery.NewManager(ctx, gokitlog.NewNopLogger())
 
 	// returns the list of targets
-	targets, err := lbdiscovery.Get(discoveryManager, cfg)
+	targets, err := discoveryManager.ApplyConfig(cfg)
 	if err != nil {
 		fmt.Println(err)
 	}
 
-	// starts a cronjob to monitor sd targets every 30s
+	// Starts a cronjob to monitor sd targets every 30s
 	s := gocron.NewScheduler(time.UTC)
-	s.Every(30).Seconds().Do(lbdiscovery.Watch, discoveryManager, &targets)
+	s.Every(30).Seconds().Do(func() {
+		targets, err := discoveryManager.Targets()
+		if err != nil {
+			log.Printf("Failed to get targets: %v", err)
+		}
+		lb.UpdateTargetSet(targets)
+	})
 	s.StartAsync()
 
 	lb = loadbalancer.Init()

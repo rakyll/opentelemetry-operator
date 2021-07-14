@@ -7,6 +7,7 @@ import (
 	"sort"
 	"testing"
 
+	gokitlog "github.com/go-kit/log"
 	"github.com/otel-loadbalancer/config"
 	"github.com/otel-loadbalancer/suite"
 	"github.com/stretchr/testify/assert"
@@ -46,10 +47,10 @@ func TestTargetDiscovery(t *testing.T) {
 	defaultConfigTestFile := suite.GetConfigTestFile()
 	cfg, err := config.Load(defaultConfigTestFile)
 	assert.NoError(t, err)
-	discoveryManager := NewManager(context.Background())
+	manager := NewManager(context.Background(), gokitlog.NewNopLogger())
 
 	t.Run("should discover targets", func(t *testing.T) {
-		targets, err := Get(discoveryManager, cfg)
+		targets, err := manager.ApplyConfig(cfg)
 		assert.NoError(t, err)
 
 		actualTargets := []string{}
@@ -68,7 +69,7 @@ func TestTargetDiscovery(t *testing.T) {
 	})
 
 	t.Run("should update targets", func(t *testing.T) {
-		targets, err := Get(discoveryManager, cfg)
+		targets, err := manager.ApplyConfig(cfg)
 		assert.NoError(t, err)
 
 		actualTargets := []string{}
@@ -76,7 +77,8 @@ func TestTargetDiscovery(t *testing.T) {
 
 		copyFile(t, suite.GetFileSdTestInitialFile(), suite.GetFileSdTestModFile())
 
-		Watch(discoveryManager, &targets)
+		targets, err = manager.Targets()
+		assert.NoError(t, err)
 
 		assert.Len(t, targets, 6)
 		for _, targets := range targets {
