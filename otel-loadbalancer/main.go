@@ -3,11 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -21,51 +21,102 @@ import (
 	"github.com/gorilla/mux"
 )
 
-var (
-	lb     *loadbalancer.LoadBalancer
-	server *http.Server
+// TODO: Make the following constants flags.
+
+const (
+	configDir  = "./conf/"
+	listenAddr = ":3030"
 )
 
-func router() *mux.Router {
-	router := mux.NewRouter()
-	router.HandleFunc("/jobs", jobHandler).Methods("GET")
-	router.HandleFunc("/jobs/{job_id}/targets", targetHandler).Methods("GET")
+func main() {
+	ctx := context.Background()
 
-	return router
-}
+	// watcher to monitor file changes in ConfigMap
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		log.Fatalf("Can't start the watcher: %v", err)
+	}
+	defer watcher.Close()
 
-func jobHandler(w http.ResponseWriter, r *http.Request) {
-	displayData := lb.Cache.DisplayJobMapping
+	if err := watcher.Add(configDir); err != nil {
+		log.Fatalf("Can't add directory to watcher: %v", err)
+	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(displayData)
-}
+	srv, err := newServer(listenAddr)
+	if err != nil {
+		log.Fatalf("Can't start the server: %v", err)
+	}
 
-func targetHandler(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()["collector_id"]
-	params := mux.Vars(r)
-	if len(q) == 0 {
-		targets := lb.Cache.DisplayCollectorJson[params["job_id"]]
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(targets)
+	interrupts := make(chan os.Signal, 1)
+	signal.Notify(interrupts, os.Interrupt, syscall.SIGTERM)
 
-	} else {
-		tgs := lb.Cache.DisplayTargetMapping[params["job_id"]+q[0]]
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(tgs)
+	go func() {
+		if err := srv.Start(); err != nil {
+			log.Fatalf("Can't start the server: %v", err)
+		}
+	}()
+
+	for {
+		select {
+		case <-interrupts:
+			if err := srv.Shutdown(ctx); err != http.ErrServerClosed {
+				log.Println(err)
+				os.Exit(1)
+			}
+			os.Exit(0)
+		case event := <-watcher.Events:
+			switch event.Op {
+			case fsnotify.Write:
+				log.Println("ConfigMap updated!")
+				// Restart the server to pickup the new config.
+				if err := srv.Shutdown(ctx); err != http.ErrServerClosed {
+					log.Fatalf("Cannot shutdown the server: %v", err)
+				}
+				srv, err = newServer(listenAddr)
+				if err != nil {
+					log.Fatalf("Error restarting the server with new config: %v", err)
+				}
+				if err := srv.Start(); err != nil {
+					log.Fatalf("Can't restart the server: %v", err)
+				}
+			}
+		case err := <-watcher.Errors:
+			log.Printf("Watcher error: %v", err)
+		}
 	}
 }
 
-func distribute(ctx context.Context) {
+type server struct {
+	scheduler *gocron.Scheduler
+	lb        *loadbalancer.LoadBalancer
+	server    *http.Server
+}
+
+func newServer(addr string) (*server, error) {
+	loadBalancer, scheduler, err := newLoadBalancer(context.Background())
+	if err != nil {
+		return nil, err
+	}
+
+	s := &server{scheduler: scheduler, lb: loadBalancer}
+
+	router := mux.NewRouter()
+	router.HandleFunc("/jobs", s.jobHandler).Methods("GET")
+	router.HandleFunc("/jobs/{job_id}/targets", s.targetHandler).Methods("GET")
+	s.server = &http.Server{Addr: addr, Handler: router}
+	return s, nil
+}
+
+func newLoadBalancer(ctx context.Context) (*loadbalancer.LoadBalancer, *gocron.Scheduler, error) {
 	cfg, err := config.Load("")
 	if err != nil {
-		fmt.Println(err)
+		return nil, nil, err
 	}
 
 	// returns the list of collectors based on label selector
 	collectors, err := collector.Get(ctx, cfg.LabelSelector)
 	if err != nil {
-		fmt.Println(err)
+		return nil, nil, err
 	}
 
 	// creates a new discovery manager
@@ -74,79 +125,60 @@ func distribute(ctx context.Context) {
 	// returns the list of targets
 	targets, err := discoveryManager.ApplyConfig(cfg)
 	if err != nil {
-		fmt.Println(err)
+		return nil, nil, err
 	}
 
+	lb := loadbalancer.Init()
+
 	// Starts a cronjob to monitor sd targets every 30s
-	s := gocron.NewScheduler(time.UTC)
-	s.Every(30).Seconds().Do(func() {
+	// TODO: We start new jobs without stopping the old ones.
+	scheduler := gocron.NewScheduler(time.UTC)
+	scheduler.Every(30).Seconds().Do(func() {
 		targets, err := discoveryManager.Targets()
 		if err != nil {
 			log.Printf("Failed to get targets: %v", err)
 		}
 		lb.UpdateTargetSet(targets)
 	})
-	s.StartAsync()
+	scheduler.StartAsync()
 
-	lb = loadbalancer.Init()
 	lb.InitializeCollectors(collectors)
 	lb.UpdateTargetSet(targets)
 	lb.RefreshJobs()
+	return lb, scheduler, nil
+}
 
-	handler := router()
-	server = &http.Server{Addr: ":3030", Handler: handler}
-	go func() {
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Error in starting server: %+s\n", err)
-		}
-	}()
-	fmt.Println("Server started...")
+func (s *server) Start() error {
+	log.Println("Starting server...")
+	return s.server.ListenAndServe()
+}
 
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt)
+func (s *server) Shutdown(ctx context.Context) error {
+	log.Println("Shutdowning server...")
+	s.scheduler.Stop()
+	return s.server.Shutdown(ctx)
+}
 
-	<-c
-	fmt.Println("Server shutting down...")
+func (s *server) jobHandler(w http.ResponseWriter, r *http.Request) {
+	displayData := s.lb.Cache.DisplayJobMapping
 
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(displayData)
+}
 
-	if err := server.Shutdown(ctx); err != http.ErrServerClosed {
-		fmt.Println(err)
+func (s *server) targetHandler(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()["collector_id"]
+	params := mux.Vars(r)
+	if len(q) == 0 {
+		targets := s.lb.Cache.DisplayCollectorJson[params["job_id"]]
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(targets)
+
+	} else {
+		tgs := s.lb.Cache.DisplayTargetMapping[params["job_id"]+q[0]]
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(tgs)
 	}
 }
 
-func main() {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// watcher to monitor file changes in ConfigMap
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		fmt.Println(err)
-	}
-	defer watcher.Close()
-
-	err = watcher.Add("/conf/")
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	go func() {
-		for {
-			select {
-			case event := <-watcher.Events:
-				switch event.Op {
-				case fsnotify.Write:
-					fmt.Println("ConfigMap updated!")
-					server.Shutdown(ctx)
-					distribute(ctx)
-				}
-			case err := <-watcher.Errors:
-				fmt.Println(err)
-			}
-		}
-	}()
-
-	distribute(ctx)
-}
+// TODO: Make sure there are no race conditions.
