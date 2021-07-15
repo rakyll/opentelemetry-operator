@@ -9,21 +9,21 @@ import (
 )
 
 // Tests least connection - The expected collector after running SetNextCollector should be the collecter with the least amount of workload
-func TestSettingNextCollector(t *testing.T) {
+func TestFindNextCollector(t *testing.T) {
 	// prepare
 	lb := NewLoadBalancer()
 	defaultCol := Collector{Name: "default-col", NumTargets: 1}
 	maxCol := Collector{Name: "max-col", NumTargets: 2}
 	leastCol := Collector{Name: "least-col", NumTargets: 0}
-	lb.CollectorMap[maxCol.Name] = &maxCol
-	lb.CollectorMap[leastCol.Name] = &leastCol
-	lb.NextCollector = &defaultCol
+	lb.collectors[maxCol.Name] = &maxCol
+	lb.collectors[leastCol.Name] = &leastCol
+	lb.nextCollector = &defaultCol
 
 	// test
-	lb.setNextCollector()
+	lb.findNextCollector()
 
 	// verify
-	assert.Equal(t, "least-col", lb.NextCollector.Name)
+	assert.Equal(t, "least-col", lb.nextCollector.Name)
 }
 
 func TestInitializingCollectors(t *testing.T) {
@@ -35,9 +35,9 @@ func TestInitializingCollectors(t *testing.T) {
 	lb.SetCollectors(cols)
 
 	// verify
-	assert.Equal(t, len(cols), len(lb.CollectorMap))
+	assert.Equal(t, len(cols), len(lb.collectors))
 	for _, i := range cols {
-		assert.True(t, (lb.CollectorMap[i] != nil))
+		assert.NotNil(t, lb.collectors[i])
 	}
 }
 
@@ -57,8 +57,8 @@ func TestAddingAndRemovingTargetFlow(t *testing.T) {
 	lb.Refresh()
 
 	// verify
-	assert.True(t, len(lb.TargetMap) == 6)
-	assert.True(t, len(lb.TargetItemMap) == 6)
+	assert.True(t, len(lb.targets) == 6)
+	assert.True(t, len(lb.targetItems) == 6)
 
 	// prepare second round of targets
 	tar := []string{"targ:1001", "targ:1002", "targ:1003", "targ:1004"}
@@ -72,12 +72,12 @@ func TestAddingAndRemovingTargetFlow(t *testing.T) {
 	lb.Refresh()
 
 	// verify
-	assert.True(t, len(lb.TargetMap) == 4)
-	assert.True(t, len(lb.TargetItemMap) == 4)
+	assert.True(t, len(lb.targets) == 4)
+	assert.True(t, len(lb.targetItems) == 4)
 
 	// verify results map
 	for _, i := range tar {
-		_, ok := lb.TargetMap["sample-name"+i]
+		_, ok := lb.targets["sample-name"+i]
 		assert.True(t, ok)
 	}
 }

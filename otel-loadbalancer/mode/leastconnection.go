@@ -36,7 +36,7 @@ type CollectorJson struct {
 	Jobs []lbdiscovery.TargetGroup `json:"targets"`
 }
 
-type TargetItem struct {
+type targetItem struct {
 	JobName   string
 	Link      LinkLabel
 	TargetURL string
@@ -53,101 +53,77 @@ type DisplayCache struct {
 	DisplayTargetMapping map[string][]lbdiscovery.TargetGroup
 }
 
+// LoadBalancer makes decisions to distribute work among
+// a number of OpenTelemetry collectors based on the number of targets.
+// Users need to call SetTargets when they have new targets in their
+// clusters and call Refresh to process the new targets and reshard.
 type LoadBalancer struct {
-	// TODO: don't export these fields and guard with mutex.
-	TargetSet     map[string]lbdiscovery.TargetData
-	TargetMap     map[string]lbdiscovery.TargetData
-	CollectorMap  map[string]*Collector
-	TargetItemMap map[string]*TargetItem
-	Cache         DisplayCache
-	NextCollector *Collector
+	Cache DisplayCache
+
+	// TODO: guard with mutex where needed.
+	targetsWaiting map[string]lbdiscovery.TargetData // temp buffer to keep targets that are waiting to be processed
+
+	targets    map[string]lbdiscovery.TargetData // all current targets used by LoadBalancer to make decisions
+	collectors map[string]*Collector             // all current collectors
+
+	nextCollector *Collector
+	targetItems   map[string]*targetItem // TODO: Merge this with targets, there should be one source of truth for all target state.
 }
 
-// Basic implementation of least connection algorithm - can be enhance or replaced by another delegation algorithm
-func (lb *LoadBalancer) setNextCollector() {
-	for _, v := range lb.CollectorMap {
-		if v.NumTargets < lb.NextCollector.NumTargets {
-			lb.NextCollector = v
+// findNextCollector finds the next collector with less number of targets.
+func (lb *LoadBalancer) findNextCollector() {
+	for _, v := range lb.collectors {
+		if v.NumTargets < lb.nextCollector.NumTargets {
+			lb.nextCollector = v
 		}
 	}
 }
 
-// Initlialize the set of targets which will be used to compare the targets in use by the collector instances
-// This function will periodically be called when changes are made in the target discovery
-func (lb *LoadBalancer) SetTargets(targetList []lbdiscovery.TargetData) {
-	// Add mutex.
-
+// SetTargets accepts the a list of targets that will be used to make
+// load balancing decisions. This method should be called when where are
+// new targets discovered or existing targets are shutdown.
+func (lb *LoadBalancer) SetTargets(targets []lbdiscovery.TargetData) {
+	// TODO: Guard lb.targetsWaiting.
 	// Dump old data
-	for k := range lb.TargetSet {
-		delete(lb.TargetSet, k)
+	for k := range lb.targetsWaiting {
+		delete(lb.targetsWaiting, k)
 	}
-
 	// Set new data
-	for _, i := range targetList {
-		lb.TargetSet[i.JobName+i.Target] = i
+	for _, i := range targets {
+		lb.targetsWaiting[i.JobName+i.Target] = i
 	}
 }
 
 // SetCollectors sets the set of collectors with key=collectorName, value=Collector object.
 func (lb *LoadBalancer) SetCollectors(collectors []string) {
-	// TODO: mutex on this
+	// TODO: Guard lb.collectors
+	// TODO: How do we handle the new collectors?
 	if len(collectors) == 0 {
 		log.Fatal("no collector instances present")
 	}
-
 	for _, i := range collectors {
 		collector := Collector{Name: i, NumTargets: 0}
-		lb.CollectorMap[i] = &collector
+		lb.collectors[i] = &collector
 	}
-	lb.NextCollector = lb.CollectorMap[collectors[0]]
-}
-
-// Remove jobs from our struct that are no longer in the new set
-func (lb *LoadBalancer) removeOutdatedTargets() {
-	for k := range lb.TargetMap {
-		if _, ok := lb.TargetSet[k]; !ok {
-			delete(lb.TargetMap, k)
-			lb.CollectorMap[lb.TargetItemMap[k].Collector.Name].NumTargets--
-			delete(lb.TargetItemMap, k)
-		}
-	}
-}
-
-//Add jobs that were added into our struct
-func (lb *LoadBalancer) addUpdatedTargets() {
-	for k, v := range lb.TargetSet {
-		if _, ok := lb.TargetItemMap[k]; !ok {
-			lb.setNextCollector()
-			lb.TargetMap[k] = v
-			targetItem := TargetItem{
-				JobName:   v.JobName,
-				Link:      LinkLabel{"/jobs/" + v.JobName + "/targets"},
-				TargetURL: v.Target,
-				Label:     v.Labels,
-				Collector: lb.NextCollector,
-			}
-			lb.NextCollector.NumTargets++
-			lb.TargetItemMap[v.JobName+v.Target] = &targetItem
-		}
-	}
+	lb.nextCollector = lb.collectors[collectors[0]]
 }
 
 func (lb *LoadBalancer) generateCache() {
 	// TODO: Remove.
-	var compareMap = make(map[string][]TargetItem) // CollectorName+jobName -> TargetItem
-	for _, targetItem := range lb.TargetItemMap {
+	var compareMap = make(map[string][]targetItem) // CollectorName+jobName -> TargetItem
+	for _, targetItem := range lb.targetItems {
 		compareMap[targetItem.Collector.Name+targetItem.JobName] = append(compareMap[targetItem.Collector.Name+targetItem.JobName], *targetItem)
 	}
 	lb.Cache = DisplayCache{DisplayJobs: make(map[string]map[string][]lbdiscovery.TargetGroup), DisplayCollectorJson: make(map[string](map[string]CollectorJson))}
-	for _, v := range lb.TargetItemMap {
+	for _, v := range lb.targetItems {
 		lb.Cache.DisplayJobs[v.JobName] = make(map[string][]lbdiscovery.TargetGroup)
 	}
-	for _, v := range lb.TargetItemMap {
-		var jobsArr []TargetItem
+	for _, v := range lb.targetItems {
+		var jobsArr []targetItem
 		jobsArr = append(jobsArr, compareMap[v.Collector.Name+v.JobName]...)
 
 		var targetGroupList []lbdiscovery.TargetGroup
-		targetItemSet := make(map[string][]TargetItem)
+		targetItemSet := make(map[string][]targetItem)
 		for _, m := range jobsArr {
 			targetItemSet[m.JobName+m.Label.String()] = append(targetItemSet[m.JobName+m.Label.String()], m)
 		}
@@ -165,7 +141,7 @@ func (lb *LoadBalancer) generateCache() {
 	}
 }
 
-// UpdateCache gets called whenever Refresh gets called
+// updateCache gets called whenever Refresh gets called
 func (lb *LoadBalancer) updateCache() {
 	// TODO: Remove.
 
@@ -173,7 +149,7 @@ func (lb *LoadBalancer) updateCache() {
 	// Create the display maps
 	lb.Cache.DisplayTargetMapping = make(map[string][]lbdiscovery.TargetGroup)
 	lb.Cache.DisplayJobMapping = make(map[string]LinkLabel)
-	for _, vv := range lb.TargetItemMap {
+	for _, vv := range lb.targetItems {
 		lb.Cache.DisplayCollectorJson[vv.JobName] = make(map[string]CollectorJson)
 	}
 	for k, v := range lb.Cache.DisplayJobs {
@@ -181,7 +157,7 @@ func (lb *LoadBalancer) updateCache() {
 			lb.Cache.DisplayCollectorJson[k][kk] = CollectorJson{Link: "/jobs/" + k + "/targets" + "?collector_id=" + kk, Jobs: vv}
 		}
 	}
-	for _, targetItem := range lb.TargetItemMap {
+	for _, targetItem := range lb.targetItems {
 		lb.Cache.DisplayJobMapping[targetItem.JobName] = LinkLabel{targetItem.Link.Link}
 	}
 
@@ -193,23 +169,51 @@ func (lb *LoadBalancer) updateCache() {
 
 }
 
-// TODO: Add boolean flags to determine if any changes were made that should trigger Refresh
-// Refresh is a function that is called periodically - this will create a cached structure to hold data for consistency
-// when collectors perform GET operations
+// Refesh needs to be called to process the new target updates.
+// Until Refresh is called, old targets will be served.
 func (lb *LoadBalancer) Refresh() {
 	// TODO: Refresh needs to be safe for concurrent access.
+	// Guard thte lb fields with a mutex where needed.
 	lb.removeOutdatedTargets()
-	lb.addUpdatedTargets()
+	lb.processWaitingTargets()
 	lb.updateCache()
 }
 
-// UpdateCache updates the DisplayMap so that mapping is consistent
+// removeOutdatedTargets removes targets that are no longer available.
+func (lb *LoadBalancer) removeOutdatedTargets() {
+	for k := range lb.targets {
+		if _, ok := lb.targetsWaiting[k]; !ok {
+			delete(lb.targets, k)
+			lb.collectors[lb.targetItems[k].Collector.Name].NumTargets--
+			delete(lb.targetItems, k)
+		}
+	}
+}
+
+// processWaitingTargets processes the newly set targets.
+func (lb *LoadBalancer) processWaitingTargets() {
+	for k, v := range lb.targetsWaiting {
+		if _, ok := lb.targetItems[k]; !ok {
+			lb.findNextCollector()
+			lb.targets[k] = v
+			targetItem := targetItem{
+				JobName:   v.JobName,
+				Link:      LinkLabel{"/jobs/" + v.JobName + "/targets"},
+				TargetURL: v.Target,
+				Label:     v.Labels,
+				Collector: lb.nextCollector,
+			}
+			lb.nextCollector.NumTargets++
+			lb.targetItems[v.JobName+v.Target] = &targetItem
+		}
+	}
+}
 
 func NewLoadBalancer() *LoadBalancer {
 	return &LoadBalancer{
-		TargetSet:     make(map[string]lbdiscovery.TargetData),
-		TargetMap:     make(map[string]lbdiscovery.TargetData),
-		CollectorMap:  make(map[string]*Collector),
-		TargetItemMap: make(map[string]*TargetItem),
+		targetsWaiting: make(map[string]lbdiscovery.TargetData),
+		targets:        make(map[string]lbdiscovery.TargetData),
+		collectors:     make(map[string]*Collector),
+		targetItems:    make(map[string]*targetItem),
 	}
 }
