@@ -1,4 +1,4 @@
-package mode
+package sharder
 
 import (
 	"testing"
@@ -8,57 +8,50 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// Tests least connection - The expected collector after running SetNextCollector should be the collecter with the least amount of workload
-func TestSettingNextCollector(t *testing.T) {
-	// prepare
-	lb := NewLoadBalancer()
+// Tests least connection - The expected collector after running findNextCollector should be the collecter with the least amount of workload
+func TestFindNextSharder(t *testing.T) {
+	s := NewSharder()
 	defaultCol := Collector{Name: "default-col", NumTargets: 1}
 	maxCol := Collector{Name: "max-col", NumTargets: 2}
 	leastCol := Collector{Name: "least-col", NumTargets: 0}
-	lb.CollectorMap[maxCol.Name] = &maxCol
-	lb.CollectorMap[leastCol.Name] = &leastCol
-	lb.NextCollector = &defaultCol
+	s.collectors[maxCol.Name] = &maxCol
+	s.collectors[leastCol.Name] = &leastCol
+	s.nextCollector = &defaultCol
 
-	// test
-	lb.setNextCollector()
-
-	// verify
-	assert.Equal(t, "least-col", lb.NextCollector.Name)
+	s.findNextCollector()
+	assert.Equal(t, "least-col", s.nextCollector.Name)
 }
 
-func TestInitializingCollectors(t *testing.T) {
-	// prepare
+func TestSetCollectors(t *testing.T) {
 	cols := []string{"col-1", "col-2", "col-3"}
-	lb := NewLoadBalancer()
 
-	// test
-	lb.SetCollectors(cols)
+	s := NewSharder()
+	s.SetCollectors(cols)
 
-	// verify
-	assert.Equal(t, len(cols), len(lb.CollectorMap))
+	assert.Equal(t, len(cols), len(s.collectors))
 	for _, i := range cols {
-		assert.True(t, (lb.CollectorMap[i] != nil))
+		assert.NotNil(t, s.collectors[i])
 	}
 }
 
-func TestAddingAndRemovingTargetFlow(t *testing.T) {
+func TestAddingAndRemovingTargets(t *testing.T) {
 	// prepare lb with initial targets and collectors
-	lb := NewLoadBalancer()
+	s := NewSharder()
 	cols := []string{"col-1", "col-2", "col-3"}
 	initTargets := []string{"targ:1000", "targ:1001", "targ:1002", "targ:1003", "targ:1004", "targ:1005"}
-	lb.SetCollectors(cols)
+	s.SetCollectors(cols)
 	var targetList []lbdiscovery.TargetData
 	for _, i := range initTargets {
 		targetList = append(targetList, lbdiscovery.TargetData{JobName: "sample-name", Target: i, Labels: model.LabelSet{}})
 	}
 
 	// test that targets and collectors are added properly
-	lb.SetTargets(targetList)
-	lb.Refresh()
+	s.SetTargets(targetList)
+	s.Reshard()
 
 	// verify
-	assert.True(t, len(lb.TargetMap) == 6)
-	assert.True(t, len(lb.TargetItemMap) == 6)
+	assert.True(t, len(s.targets) == 6)
+	assert.True(t, len(s.targetItems) == 6)
 
 	// prepare second round of targets
 	tar := []string{"targ:1001", "targ:1002", "targ:1003", "targ:1004"}
@@ -68,16 +61,16 @@ func TestAddingAndRemovingTargetFlow(t *testing.T) {
 	}
 
 	// test that less targets are found - removed
-	lb.SetTargets(tarL)
-	lb.Refresh()
+	s.SetTargets(tarL)
+	s.Reshard()
 
 	// verify
-	assert.True(t, len(lb.TargetMap) == 4)
-	assert.True(t, len(lb.TargetItemMap) == 4)
+	assert.True(t, len(s.targets) == 4)
+	assert.True(t, len(s.targetItems) == 4)
 
 	// verify results map
 	for _, i := range tar {
-		_, ok := lb.TargetMap["sample-name"+i]
+		_, ok := s.targets["sample-name"+i]
 		assert.True(t, ok)
 	}
 }
