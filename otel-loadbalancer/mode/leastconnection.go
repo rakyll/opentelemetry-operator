@@ -7,18 +7,24 @@ import (
 	"github.com/prometheus/common/model"
 )
 
+// TODO: Move config and discovery to this package.
+// TODO: Rename this package. This component is not a load balancer but a sharder or an autoscaler.
+
 /*
 	Load balancer will serve on an HTTP server exposing /jobs/<job_id>/targets <- these are configured using least connection
 	Load balancer will need information about the collectors in order to set the URLs
 	Keep a Map of what each collector currently holds and update it based on new scrape target updates
 */
+
 // Create a struct that holds collector - and jobs for that collector
 // This struct will be parsed into endpoint with collector and jobs info
 
 type Collector struct {
-	Name     string
-	NumTargs int
+	Name       string
+	NumTargets int
 }
+
+// TODO: Why do we have an _ in _link?
 
 // Label to display on the http server
 type LinkLabel struct {
@@ -30,19 +36,16 @@ type CollectorJson struct {
 	Jobs []lbdiscovery.TargetGroup `json:"targets"`
 }
 
-// Next will hold the next collector pointer to be used when adding a new job (Uses least connection to be determined)
-type Next struct {
-	NextCollector *Collector
-}
-
 type TargetItem struct {
-	JobName      string
-	Link         LinkLabel
-	TargetUrl    string
-	Label        model.LabelSet
-	CollectorPtr *Collector
+	JobName   string
+	Link      LinkLabel
+	TargetURL string
+	Label     model.LabelSet
+	Collector *Collector
 }
 
+// TODO: Remove cache, generate responses on the fly.
+// This is a microoptimization, generating the responses is cheap.
 type DisplayCache struct {
 	DisplayJobs          map[string](map[string][]lbdiscovery.TargetGroup)
 	DisplayCollectorJson map[string](map[string]CollectorJson)
@@ -51,26 +54,29 @@ type DisplayCache struct {
 }
 
 type LoadBalancer struct {
+	// TODO: don't export these fields and guard with mutex.
 	TargetSet     map[string]lbdiscovery.TargetData
 	TargetMap     map[string]lbdiscovery.TargetData
 	CollectorMap  map[string]*Collector
 	TargetItemMap map[string]*TargetItem
 	Cache         DisplayCache
-	NextCol       Next
+	NextCollector *Collector
 }
 
 // Basic implementation of least connection algorithm - can be enhance or replaced by another delegation algorithm
-func (lb *LoadBalancer) SetNextCollector() {
+func (lb *LoadBalancer) setNextCollector() {
 	for _, v := range lb.CollectorMap {
-		if v.NumTargs < lb.NextCol.NextCollector.NumTargs {
-			lb.NextCol.NextCollector = v
+		if v.NumTargets < lb.NextCollector.NumTargets {
+			lb.NextCollector = v
 		}
 	}
 }
 
 // Initlialize the set of targets which will be used to compare the targets in use by the collector instances
 // This function will periodically be called when changes are made in the target discovery
-func (lb *LoadBalancer) UpdateTargetSet(targetList []lbdiscovery.TargetData) {
+func (lb *LoadBalancer) SetTargets(targetList []lbdiscovery.TargetData) {
+	// Add mutex.
+
 	// Dump old data
 	for k := range lb.TargetSet {
 		delete(lb.TargetSet, k)
@@ -82,48 +88,55 @@ func (lb *LoadBalancer) UpdateTargetSet(targetList []lbdiscovery.TargetData) {
 	}
 }
 
-// Initalize our set of collectors with key=collectorName, value=Collector object
-// Collector instances are stable. Once initiated & allocated, these should not change. Only their jobs will change
-func (lb *LoadBalancer) InitializeCollectors(collectors []string) {
+// SetCollectors sets the set of collectors with key=collectorName, value=Collector object.
+func (lb *LoadBalancer) SetCollectors(collectors []string) {
+	// TODO: mutex on this
 	if len(collectors) == 0 {
 		log.Fatal("no collector instances present")
 	}
 
 	for _, i := range collectors {
-		collector := Collector{Name: i, NumTargs: 0}
+		collector := Collector{Name: i, NumTargets: 0}
 		lb.CollectorMap[i] = &collector
 	}
-	lb.NextCol.NextCollector = lb.CollectorMap[collectors[0]]
+	lb.NextCollector = lb.CollectorMap[collectors[0]]
 }
 
-//Remove jobs from our struct that are no longer in the new set
-func (lb *LoadBalancer) RemoveOutdatedTargets() {
+// Remove jobs from our struct that are no longer in the new set
+func (lb *LoadBalancer) removeOutdatedTargets() {
 	for k := range lb.TargetMap {
 		if _, ok := lb.TargetSet[k]; !ok {
 			delete(lb.TargetMap, k)
-			lb.CollectorMap[lb.TargetItemMap[k].CollectorPtr.Name].NumTargs--
+			lb.CollectorMap[lb.TargetItemMap[k].Collector.Name].NumTargets--
 			delete(lb.TargetItemMap, k)
 		}
 	}
 }
 
 //Add jobs that were added into our struct
-func (lb *LoadBalancer) AddUpdatedTargets() {
+func (lb *LoadBalancer) addUpdatedTargets() {
 	for k, v := range lb.TargetSet {
 		if _, ok := lb.TargetItemMap[k]; !ok {
-			lb.SetNextCollector()
+			lb.setNextCollector()
 			lb.TargetMap[k] = v
-			targetItem := TargetItem{JobName: v.JobName, Link: LinkLabel{"/jobs/" + v.JobName + "/targets"}, TargetUrl: v.Target, Label: v.Labels, CollectorPtr: lb.NextCol.NextCollector}
-			lb.NextCol.NextCollector.NumTargs++
+			targetItem := TargetItem{
+				JobName:   v.JobName,
+				Link:      LinkLabel{"/jobs/" + v.JobName + "/targets"},
+				TargetURL: v.Target,
+				Label:     v.Labels,
+				Collector: lb.NextCollector,
+			}
+			lb.NextCollector.NumTargets++
 			lb.TargetItemMap[v.JobName+v.Target] = &targetItem
 		}
 	}
 }
 
-func (lb *LoadBalancer) GenerateCache() {
+func (lb *LoadBalancer) generateCache() {
+	// TODO: Remove.
 	var compareMap = make(map[string][]TargetItem) // CollectorName+jobName -> TargetItem
 	for _, targetItem := range lb.TargetItemMap {
-		compareMap[targetItem.CollectorPtr.Name+targetItem.JobName] = append(compareMap[targetItem.CollectorPtr.Name+targetItem.JobName], *targetItem)
+		compareMap[targetItem.Collector.Name+targetItem.JobName] = append(compareMap[targetItem.Collector.Name+targetItem.JobName], *targetItem)
 	}
 	lb.Cache = DisplayCache{DisplayJobs: make(map[string]map[string][]lbdiscovery.TargetGroup), DisplayCollectorJson: make(map[string](map[string]CollectorJson))}
 	for _, v := range lb.TargetItemMap {
@@ -131,7 +144,7 @@ func (lb *LoadBalancer) GenerateCache() {
 	}
 	for _, v := range lb.TargetItemMap {
 		var jobsArr []TargetItem
-		jobsArr = append(jobsArr, compareMap[v.CollectorPtr.Name+v.JobName]...)
+		jobsArr = append(jobsArr, compareMap[v.Collector.Name+v.JobName]...)
 
 		var targetGroupList []lbdiscovery.TargetGroup
 		targetItemSet := make(map[string][]TargetItem)
@@ -142,20 +155,21 @@ func (lb *LoadBalancer) GenerateCache() {
 		for _, targetItemList := range targetItemSet {
 			var targetArr []string
 			for _, targetItem := range targetItemList {
-				labelSet[targetItem.TargetUrl] = targetItem.Label
-				targetArr = append(targetArr, targetItem.TargetUrl)
+				labelSet[targetItem.TargetURL] = targetItem.Label
+				targetArr = append(targetArr, targetItem.TargetURL)
 			}
 			targetGroupList = append(targetGroupList, lbdiscovery.TargetGroup{Targets: targetArr, Labels: labelSet[targetArr[0]]})
 
 		}
-		lb.Cache.DisplayJobs[v.JobName][v.CollectorPtr.Name] = targetGroupList
+		lb.Cache.DisplayJobs[v.JobName][v.Collector.Name] = targetGroupList
 	}
 }
 
-// TODO: Add mutex
-// UpdateCache gets called whenever RefreshJobs gets called
-func (lb *LoadBalancer) UpdateCache() {
-	lb.GenerateCache() // Create cached structure
+// UpdateCache gets called whenever Refresh gets called
+func (lb *LoadBalancer) updateCache() {
+	// TODO: Remove.
+
+	lb.generateCache() // Create cached structure
 	// Create the display maps
 	lb.Cache.DisplayTargetMapping = make(map[string][]lbdiscovery.TargetGroup)
 	lb.Cache.DisplayJobMapping = make(map[string]LinkLabel)
@@ -179,23 +193,23 @@ func (lb *LoadBalancer) UpdateCache() {
 
 }
 
-// TODO: Add boolean flags to determine if any changes were made that should trigger RefreshJobs
-// RefreshJobs is a function that is called periodically - this will create a cached structure to hold data for consistency
+// TODO: Add boolean flags to determine if any changes were made that should trigger Refresh
+// Refresh is a function that is called periodically - this will create a cached structure to hold data for consistency
 // when collectors perform GET operations
-func (lb *LoadBalancer) RefreshJobs() {
-	lb.RemoveOutdatedTargets()
-	lb.AddUpdatedTargets()
-	lb.UpdateCache()
+func (lb *LoadBalancer) Refresh() {
+	// TODO: Refresh needs to be safe for concurrent access.
+	lb.removeOutdatedTargets()
+	lb.addUpdatedTargets()
+	lb.updateCache()
 }
 
 // UpdateCache updates the DisplayMap so that mapping is consistent
 
-func Init() *LoadBalancer {
-	lb := LoadBalancer{
+func NewLoadBalancer() *LoadBalancer {
+	return &LoadBalancer{
 		TargetSet:     make(map[string]lbdiscovery.TargetData),
 		TargetMap:     make(map[string]lbdiscovery.TargetData),
 		CollectorMap:  make(map[string]*Collector),
 		TargetItemMap: make(map[string]*TargetItem),
-		NextCol:       Next{}}
-	return &lb
+	}
 }
