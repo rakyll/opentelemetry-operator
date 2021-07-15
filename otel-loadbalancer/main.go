@@ -128,23 +128,26 @@ func newLoadBalancer(ctx context.Context) (*loadbalancer.LoadBalancer, *gocron.S
 		return nil, nil, err
 	}
 
-	lb := loadbalancer.Init()
+	lb := loadbalancer.NewLoadBalancer()
 
 	// Starts a cronjob to monitor sd targets every 30s
 	// TODO: We start new jobs without stopping the old ones.
+	// TODO: Move this and discovery into the mode package.
+	// They are both internal implementation details of the LoadBalancer.
 	scheduler := gocron.NewScheduler(time.UTC)
 	scheduler.Every(30).Seconds().Do(func() {
 		targets, err := discoveryManager.Targets()
 		if err != nil {
 			log.Printf("Failed to get targets: %v", err)
 		}
-		lb.UpdateTargetSet(targets)
+		lb.SetTargets(targets)
+		lb.Refresh()
 	})
 	scheduler.StartAsync()
 
-	lb.InitializeCollectors(collectors)
-	lb.UpdateTargetSet(targets)
-	lb.RefreshJobs()
+	lb.SetCollectors(collectors)
+	lb.SetTargets(targets)
+	lb.Refresh()
 	return lb, scheduler, nil
 }
 
