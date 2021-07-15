@@ -16,7 +16,7 @@ import (
 	"github.com/otel-loadbalancer/collector"
 	"github.com/otel-loadbalancer/config"
 	lbdiscovery "github.com/otel-loadbalancer/discovery"
-	loadbalancer "github.com/otel-loadbalancer/mode"
+	"github.com/otel-loadbalancer/sharder"
 
 	"github.com/gorilla/mux"
 )
@@ -88,17 +88,17 @@ func main() {
 
 type server struct {
 	scheduler *gocron.Scheduler
-	lb        *loadbalancer.LoadBalancer
+	sharder   *sharder.Sharder
 	server    *http.Server
 }
 
 func newServer(addr string) (*server, error) {
-	loadBalancer, scheduler, err := newLoadBalancer(context.Background())
+	sharder, scheduler, err := newSharder(context.Background())
 	if err != nil {
 		return nil, err
 	}
 
-	s := &server{scheduler: scheduler, lb: loadBalancer}
+	s := &server{scheduler: scheduler, sharder: sharder}
 
 	router := mux.NewRouter()
 	router.HandleFunc("/jobs", s.jobHandler).Methods("GET")
@@ -107,7 +107,7 @@ func newServer(addr string) (*server, error) {
 	return s, nil
 }
 
-func newLoadBalancer(ctx context.Context) (*loadbalancer.LoadBalancer, *gocron.Scheduler, error) {
+func newSharder(ctx context.Context) (*sharder.Sharder, *gocron.Scheduler, error) {
 	cfg, err := config.Load("")
 	if err != nil {
 		return nil, nil, err
@@ -128,27 +128,25 @@ func newLoadBalancer(ctx context.Context) (*loadbalancer.LoadBalancer, *gocron.S
 		return nil, nil, err
 	}
 
-	lb := loadbalancer.NewLoadBalancer()
+	sharder := sharder.NewSharder()
 
 	// Starts a cronjob to monitor sd targets every 30s
 	// TODO: We start new jobs without stopping the old ones.
-	// TODO: Move this and discovery into the mode package.
-	// They are both internal implementation details of the LoadBalancer.
 	scheduler := gocron.NewScheduler(time.UTC)
 	scheduler.Every(30).Seconds().Do(func() {
 		targets, err := discoveryManager.Targets()
 		if err != nil {
 			log.Printf("Failed to get targets: %v", err)
 		}
-		lb.SetTargets(targets)
-		lb.Refresh()
+		sharder.SetTargets(targets)
+		sharder.Reshard()
 	})
 	scheduler.StartAsync()
 
-	lb.SetCollectors(collectors)
-	lb.SetTargets(targets)
-	lb.Refresh()
-	return lb, scheduler, nil
+	sharder.SetCollectors(collectors)
+	sharder.SetTargets(targets)
+	sharder.Reshard()
+	return sharder, scheduler, nil
 }
 
 func (s *server) Start() error {
@@ -163,7 +161,7 @@ func (s *server) Shutdown(ctx context.Context) error {
 }
 
 func (s *server) jobHandler(w http.ResponseWriter, r *http.Request) {
-	displayData := s.lb.Cache.DisplayJobMapping
+	displayData := s.sharder.Cache.DisplayJobMapping
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(displayData)
@@ -173,12 +171,12 @@ func (s *server) targetHandler(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()["collector_id"]
 	params := mux.Vars(r)
 	if len(q) == 0 {
-		targets := s.lb.Cache.DisplayCollectorJson[params["job_id"]]
+		targets := s.sharder.Cache.DisplayCollectorJson[params["job_id"]]
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(targets)
 
 	} else {
-		tgs := s.lb.Cache.DisplayTargetMapping[params["job_id"]+q[0]]
+		tgs := s.sharder.Cache.DisplayTargetMapping[params["job_id"]+q[0]]
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(tgs)
 	}
