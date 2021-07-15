@@ -32,11 +32,6 @@ type Manager struct {
 	logger  log.Logger
 }
 
-type TargetGroup struct {
-	Targets []string
-	Labels  model.LabelSet
-}
-
 type TargetData struct {
 	JobName string
 	Target  string
@@ -275,30 +270,13 @@ func (m *Manager) ApplyConfig(cfg config.Config) ([]TargetData, error) {
 }
 
 func (m *Manager) Targets() ([]TargetData, error) {
-	// TODO: Remove the the marshalling and unmarshalling here.
 	tsets := <-m.manager.SyncCh()
 	targets := []TargetData{}
 
 	for jobName, tgs := range tsets {
-		for _, target := range tgs {
-			var targetGroup TargetGroup
-			data, err := target.MarshalYAML()
-			if err != nil {
-				return nil, err
-			}
-
-			targetYAML, err := yaml.Marshal(data)
-			if err != nil {
-				return nil, err
-			}
-
-			if err = yaml.Unmarshal(targetYAML, &targetGroup); err != nil {
-				return nil, err
-			}
-
-			targetsList := targetGroup.Targets
-			for _, target := range targetsList {
-				targets = append(targets, TargetData{JobName: jobName, Target: target, Labels: targetGroup.Labels})
+		for _, tg := range tgs {
+			for _, t := range tg.Targets {
+				targets = append(targets, TargetData{JobName: jobName, Target: string(t[model.AddressLabel]), Labels: tg.Labels})
 			}
 		}
 	}
