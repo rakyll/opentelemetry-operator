@@ -4,7 +4,6 @@ go 1.16
 
 require (
 	github.com/fsnotify/fsnotify v1.4.9
-	github.com/go-co-op/gocron v1.6.2
 	github.com/go-kit/log v0.1.0
 	github.com/gorilla/mux v1.8.0
 	github.com/prometheus/common v0.29.0

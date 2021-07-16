@@ -2,95 +2,53 @@ package discovery
 
 import (
 	"context"
-	"io/ioutil"
-	"os"
 	"sort"
 	"testing"
 
 	gokitlog "github.com/go-kit/log"
 	"github.com/otel-loadbalancer/config"
-	"github.com/otel-loadbalancer/suite"
 	"github.com/stretchr/testify/assert"
 )
 
-func copyFileHelper(src string, dst string) error {
-	input, err := ioutil.ReadFile(src)
-	if err != nil {
-		return err
-	}
-
-	err = ioutil.WriteFile(dst, input, 0644)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func copyFile(t testing.TB, src string, dst string) {
-	t.Helper()
-	tmp := "../suite/tmp.json"
-	err := ioutil.WriteFile(tmp, []byte(""), 0644)
-	assert.NoError(t, err)
-
-	err = copyFileHelper(src, tmp)
-	assert.NoError(t, err)
-	err = copyFileHelper(dst, src)
-	assert.NoError(t, err)
-	err = copyFileHelper(tmp, dst)
-	assert.NoError(t, err)
-
-	err = os.Remove(tmp)
-	assert.NoError(t, err)
-}
-
 func TestTargetDiscovery(t *testing.T) {
-	defaultConfigTestFile := suite.GetConfigTestFile()
-	cfg, err := config.Load(defaultConfigTestFile)
+	cfg, err := config.Load("./testdata/test.yaml")
 	assert.NoError(t, err)
 	manager := NewManager(context.Background(), gokitlog.NewNopLogger())
 
+	results := make(chan []string)
+	manager.Watch(func(targets []TargetData) {
+		var result []string
+		for _, t := range targets {
+			result = append(result, t.Target)
+		}
+		results <- result
+	})
+
 	t.Run("should discover targets", func(t *testing.T) {
-		targets, err := manager.ApplyConfig(cfg)
+		err := manager.ApplyConfig(cfg)
 		assert.NoError(t, err)
 
-		actualTargets := []string{}
-		expectedTargets := []string{"prom.domain:9001", "prom.domain:9002", "prom.domain:9003", "promfile.domain:1001", "promfile.domain:3000"}
+		gotTargets := <-results
+		wantTargets := []string{"prom.domain:9001", "prom.domain:9002", "prom.domain:9003"}
 
-		assert.Len(t, targets, 5)
-		for _, targets := range targets {
-			actualTargets = append(actualTargets, targets.Target)
-		}
-
-		sort.Strings(expectedTargets)
-		sort.Strings(actualTargets)
-
-		assert.Equal(t, expectedTargets, actualTargets)
-
+		sort.Strings(gotTargets)
+		sort.Strings(wantTargets)
+		assert.Equal(t, gotTargets, wantTargets)
 	})
 
 	t.Run("should update targets", func(t *testing.T) {
-		targets, err := manager.ApplyConfig(cfg)
-		assert.NoError(t, err)
-
-		actualTargets := []string{}
-		expectedTargets := []string{"prom.domain:9001", "prom.domain:9002", "prom.domain:9003", "promfile.domain:1001", "promfile.domain:3000", "promfile.domain:4000"}
-
-		copyFile(t, suite.GetFileSdTestInitialFile(), suite.GetFileSdTestModFile())
-
-		targets, err = manager.Targets()
-		assert.NoError(t, err)
-
-		assert.Len(t, targets, 6)
-		for _, targets := range targets {
-			actualTargets = append(actualTargets, targets.Target)
+		cfg.Config.ScrapeConfigs[0]["static_configs"] = []map[string]interface{}{
+			{"targets": []string{"prom.domain:9004", "prom.domain:9005"}},
 		}
 
-		sort.Strings(expectedTargets)
-		sort.Strings(actualTargets)
+		err := manager.ApplyConfig(cfg)
+		assert.NoError(t, err)
 
-		assert.Equal(t, expectedTargets, actualTargets)
+		gotTargets := <-results
+		wantTargets := []string{"prom.domain:9004", "prom.domain:9005"}
 
-		copyFile(t, suite.GetFileSdTestInitialFile(), suite.GetFileSdTestModFile())
-
+		sort.Strings(gotTargets)
+		sort.Strings(wantTargets)
+		assert.Equal(t, gotTargets, wantTargets)
 	})
 }
