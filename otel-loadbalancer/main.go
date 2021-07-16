@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"log"
 	"net/http"
 	"os"
@@ -100,8 +99,8 @@ func newServer(addr string) (*server, error) {
 		discoveryManager: discoveryManager,
 	}
 	router := mux.NewRouter()
-	router.HandleFunc("/jobs", s.jobHandler).Methods("GET")
-	router.HandleFunc("/jobs/{job_id}/targets", s.targetHandler).Methods("GET")
+	router.HandleFunc("/jobs", sharder.JobHandler).Methods("GET")
+	router.HandleFunc("/jobs/{job_id}/targets", sharder.TargetsHandler).Methods("GET")
 	s.server = &http.Server{Addr: addr, Handler: router}
 	return s, nil
 }
@@ -144,28 +143,6 @@ func (s *server) Shutdown(ctx context.Context) error {
 	log.Println("Shutdowning server...")
 	s.discoveryManager.Close()
 	return s.server.Shutdown(ctx)
-}
-
-func (s *server) jobHandler(w http.ResponseWriter, r *http.Request) {
-	displayData := s.sharder.Cache.DisplayJobMapping
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(displayData)
-}
-
-func (s *server) targetHandler(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()["collector_id"]
-	params := mux.Vars(r)
-	if len(q) == 0 {
-		targets := s.sharder.Cache.DisplayCollectorJson[params["job_id"]]
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(targets)
-
-	} else {
-		tgs := s.sharder.Cache.DisplayTargetMapping[params["job_id"]+q[0]]
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(tgs)
-	}
 }
 
 // TODO: Make sure there are no race conditions.

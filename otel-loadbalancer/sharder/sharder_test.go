@@ -11,9 +11,9 @@ import (
 // Tests least connection - The expected collector after running findNextCollector should be the collecter with the least amount of workload
 func TestFindNextSharder(t *testing.T) {
 	s := NewSharder()
-	defaultCol := Collector{Name: "default-col", NumTargets: 1}
-	maxCol := Collector{Name: "max-col", NumTargets: 2}
-	leastCol := Collector{Name: "least-col", NumTargets: 0}
+	defaultCol := collector{Name: "default-col", NumTargets: 1}
+	maxCol := collector{Name: "max-col", NumTargets: 2}
+	leastCol := collector{Name: "least-col", NumTargets: 0}
 	s.collectors[maxCol.Name] = &maxCol
 	s.collectors[leastCol.Name] = &leastCol
 	s.nextCollector = &defaultCol
