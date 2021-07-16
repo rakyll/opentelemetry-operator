@@ -30,6 +30,8 @@ import (
 type Manager struct {
 	manager *discovery.Manager
 	logger  log.Logger
+
+	close chan struct{}
 }
 
 type TargetData struct {
@@ -39,13 +41,20 @@ type TargetData struct {
 }
 
 func NewManager(ctx context.Context, logger log.Logger, options ...func(*discovery.Manager)) *Manager {
+	manager := discovery.NewManager(ctx, logger, options...)
+	go func() {
+		if err := manager.Run(); err != nil {
+			logger.Log("Discovery manager failed", err)
+		}
+	}()
 	return &Manager{
-		manager: discovery.NewManager(ctx, logger, options...),
+		manager: manager,
 		logger:  logger,
+		close:   make(chan struct{}),
 	}
 }
 
-func (m *Manager) ApplyConfig(cfg config.Config) ([]TargetData, error) {
+func (m *Manager) ApplyConfig(cfg config.Config) error {
 	discoveryCfg := make(map[string]discovery.Configs)
 
 	for _, scrapeConfig := range cfg.Config.ScrapeConfigs {
@@ -256,29 +265,36 @@ func (m *Manager) ApplyConfig(cfg config.Config) ([]TargetData, error) {
 		}
 		discoveryCfg[scrapeConfig["job_name"].(string)] = discoveryConfigs
 	}
-
-	if err := m.manager.ApplyConfig(discoveryCfg); err != nil {
-		return nil, err
-	}
-	go func() {
-		if err := m.manager.Run(); err != nil {
-			m.logger.Log("discovery manager failed", err)
-		}
-	}()
-
-	return m.Targets()
+	return m.manager.ApplyConfig(discoveryCfg)
 }
 
-func (m *Manager) Targets() ([]TargetData, error) {
-	tsets := <-m.manager.SyncCh()
-	targets := []TargetData{}
+func (m *Manager) Watch(fn func(targets []TargetData)) {
+	go func() {
+		for {
+			select {
+			case <-m.close:
+				return
+			case tsets := <-m.manager.SyncCh():
+				targets := []TargetData{}
 
-	for jobName, tgs := range tsets {
-		for _, tg := range tgs {
-			for _, t := range tg.Targets {
-				targets = append(targets, TargetData{JobName: jobName, Target: string(t[model.AddressLabel]), Labels: tg.Labels})
+				for jobName, tgs := range tsets {
+					for _, tg := range tgs {
+						for _, t := range tg.Targets {
+							targets = append(targets, TargetData{
+								JobName: jobName,
+								Target:  string(t[model.AddressLabel]),
+								Labels:  tg.Labels,
+							})
+						}
+					}
+				}
+				fn(targets)
+				// TODO: Add timeout.
 			}
 		}
-	}
-	return targets, nil
+	}()
+}
+
+func (m *Manager) Close() {
+	close(m.close)
 }

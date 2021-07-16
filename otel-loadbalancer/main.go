@@ -8,10 +8,8 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/fsnotify/fsnotify"
-	"github.com/go-co-op/gocron"
 	gokitlog "github.com/go-kit/log"
 	"github.com/otel-loadbalancer/collector"
 	"github.com/otel-loadbalancer/config"
@@ -87,19 +85,20 @@ func main() {
 }
 
 type server struct {
-	scheduler *gocron.Scheduler
-	sharder   *sharder.Sharder
-	server    *http.Server
+	sharder          *sharder.Sharder
+	discoveryManager *lbdiscovery.Manager
+	server           *http.Server
 }
 
 func newServer(addr string) (*server, error) {
-	sharder, scheduler, err := newSharder(context.Background())
+	sharder, discoveryManager, err := newSharder(context.Background())
 	if err != nil {
 		return nil, err
 	}
-
-	s := &server{scheduler: scheduler, sharder: sharder}
-
+	s := &server{
+		sharder:          sharder,
+		discoveryManager: discoveryManager,
+	}
 	router := mux.NewRouter()
 	router.HandleFunc("/jobs", s.jobHandler).Methods("GET")
 	router.HandleFunc("/jobs/{job_id}/targets", s.targetHandler).Methods("GET")
@@ -107,7 +106,7 @@ func newServer(addr string) (*server, error) {
 	return s, nil
 }
 
-func newSharder(ctx context.Context) (*sharder.Sharder, *gocron.Scheduler, error) {
+func newSharder(ctx context.Context) (*sharder.Sharder, *lbdiscovery.Manager, error) {
 	cfg, err := config.Load("")
 	if err != nil {
 		return nil, nil, err
@@ -123,30 +122,17 @@ func newSharder(ctx context.Context) (*sharder.Sharder, *gocron.Scheduler, error
 	discoveryManager := lbdiscovery.NewManager(ctx, gokitlog.NewNopLogger())
 
 	// returns the list of targets
-	targets, err := discoveryManager.ApplyConfig(cfg)
-	if err != nil {
+	if err := discoveryManager.ApplyConfig(cfg); err != nil {
 		return nil, nil, err
 	}
 
 	sharder := sharder.NewSharder()
-
-	// Starts a cronjob to monitor sd targets every 30s
-	// TODO: We start new jobs without stopping the old ones.
-	scheduler := gocron.NewScheduler(time.UTC)
-	scheduler.Every(30).Seconds().Do(func() {
-		targets, err := discoveryManager.Targets()
-		if err != nil {
-			log.Printf("Failed to get targets: %v", err)
-		}
+	discoveryManager.Watch(func(targets []lbdiscovery.TargetData) {
 		sharder.SetTargets(targets)
 		sharder.Reshard()
 	})
-	scheduler.StartAsync()
-
 	sharder.SetCollectors(collectors)
-	sharder.SetTargets(targets)
-	sharder.Reshard()
-	return sharder, scheduler, nil
+	return sharder, discoveryManager, nil
 }
 
 func (s *server) Start() error {
@@ -156,7 +142,7 @@ func (s *server) Start() error {
 
 func (s *server) Shutdown(ctx context.Context) error {
 	log.Println("Shutdowning server...")
-	s.scheduler.Stop()
+	s.discoveryManager.Close()
 	return s.server.Shutdown(ctx)
 }
 
