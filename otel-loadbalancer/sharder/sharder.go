@@ -32,8 +32,13 @@ type LinkLabel struct {
 }
 
 type CollectorJson struct {
-	Link string                    `json:"_link"`
-	Jobs []lbdiscovery.TargetGroup `json:"targets"`
+	Link string        `json:"_link"`
+	Jobs []TargetGroup `json:"targets"`
+}
+
+type TargetGroup struct {
+	Targets []string       `json:"targets"`
+	Labels  model.LabelSet `json:"labels"`
 }
 
 type targetItem struct {
@@ -47,10 +52,10 @@ type targetItem struct {
 // TODO: Remove cache, generate responses on the fly.
 // This is a microoptimization, generating the responses is cheap.
 type DisplayCache struct {
-	DisplayJobs          map[string](map[string][]lbdiscovery.TargetGroup)
+	DisplayJobs          map[string](map[string][]TargetGroup)
 	DisplayCollectorJson map[string](map[string]CollectorJson)
 	DisplayJobMapping    map[string]LinkLabel
-	DisplayTargetMapping map[string][]lbdiscovery.TargetGroup
+	DisplayTargetMapping map[string][]TargetGroup
 }
 
 // Sharder makes decisions to distribute work among
@@ -114,15 +119,15 @@ func (sharder *Sharder) generateCache() {
 	for _, targetItem := range sharder.targetItems {
 		compareMap[targetItem.Collector.Name+targetItem.JobName] = append(compareMap[targetItem.Collector.Name+targetItem.JobName], *targetItem)
 	}
-	sharder.Cache = DisplayCache{DisplayJobs: make(map[string]map[string][]lbdiscovery.TargetGroup), DisplayCollectorJson: make(map[string](map[string]CollectorJson))}
+	sharder.Cache = DisplayCache{DisplayJobs: make(map[string]map[string][]TargetGroup), DisplayCollectorJson: make(map[string](map[string]CollectorJson))}
 	for _, v := range sharder.targetItems {
-		sharder.Cache.DisplayJobs[v.JobName] = make(map[string][]lbdiscovery.TargetGroup)
+		sharder.Cache.DisplayJobs[v.JobName] = make(map[string][]TargetGroup)
 	}
 	for _, v := range sharder.targetItems {
 		var jobsArr []targetItem
 		jobsArr = append(jobsArr, compareMap[v.Collector.Name+v.JobName]...)
 
-		var targetGroupList []lbdiscovery.TargetGroup
+		var targetGroupList []TargetGroup
 		targetItemSet := make(map[string][]targetItem)
 		for _, m := range jobsArr {
 			targetItemSet[m.JobName+m.Label.String()] = append(targetItemSet[m.JobName+m.Label.String()], m)
@@ -134,7 +139,7 @@ func (sharder *Sharder) generateCache() {
 				labelSet[targetItem.TargetURL] = targetItem.Label
 				targetArr = append(targetArr, targetItem.TargetURL)
 			}
-			targetGroupList = append(targetGroupList, lbdiscovery.TargetGroup{Targets: targetArr, Labels: labelSet[targetArr[0]]})
+			targetGroupList = append(targetGroupList, TargetGroup{Targets: targetArr, Labels: labelSet[targetArr[0]]})
 
 		}
 		sharder.Cache.DisplayJobs[v.JobName][v.Collector.Name] = targetGroupList
@@ -147,7 +152,7 @@ func (sharder *Sharder) updateCache() {
 
 	sharder.generateCache() // Create cached structure
 	// Create the display maps
-	sharder.Cache.DisplayTargetMapping = make(map[string][]lbdiscovery.TargetGroup)
+	sharder.Cache.DisplayTargetMapping = make(map[string][]TargetGroup)
 	sharder.Cache.DisplayJobMapping = make(map[string]LinkLabel)
 	for _, vv := range sharder.targetItems {
 		sharder.Cache.DisplayCollectorJson[vv.JobName] = make(map[string]CollectorJson)
